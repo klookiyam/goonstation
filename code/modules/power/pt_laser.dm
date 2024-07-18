@@ -226,27 +226,25 @@
 	var/last_firing = firing
 	var/dont_update = 0
 	var/adj_output = abs(output)
-	var/unconsumed_surplus = src.get_available_input_power(mult) // Incoming power beyond battery charge we can use to fuel the laser, capped by chargelevel.
+	var/power_used = 0
+	var/adj_charge = 0
 	var/connected = terminal && !(src.status & BROKEN)
+	var/starting_surplus = get_available_input_power()
 
 	if(connected)
 		src.excess = src.get_available_terminal_power()
-		if(!src.charging || src.excess < src.chargelevel * mult)
+		if(!src.charging || src.excess < src.chargelevel)
 			load_last_tick = 0
-			unconsumed_surplus = (src.charging * src.excess) // Have less than the desired input power - but we still want to make use of that power
-			if (src.is_charging) src.is_charging = FALSE
-
-	adj_output *= mult
 
 	if(online) // if it's switched on
 		if(!firing) //not firing
 
-			if(src.can_fire(mult)) //have power to fire
+			if(src.can_fire()) //have power to fire
 				start_firing() //creates all the laser objects then activates the right ones
 				dont_update = 1 //so the firing animation runs
-				unconsumed_surplus -= adj_output
-		else if(!src.can_fire(mult)) //firing but not enough charge to sustain
-			unconsumed_surplus = -src.charge // We eat the last of the charge
+				power_used -= adj_output
+		else if(!src.can_fire()) //firing but not enough charge to sustain
+			power_used = get_available_input_power() + src.charge // We eat the last of the charge
 			stop_firing()
 		else //firing and have enough power to carry on
 			if (src.laser_output_needs_update)
@@ -258,21 +256,23 @@
 				if(burn_living(L,adj_output)) //returns 1 if they are gibbed, 0 otherwise
 					affecting_mobs -= L
 
-			src.charge = max(0, src.charge - adj_output)
+			power_used += adj_output
 
 			if(length(blocking_objects) > 0)
 				melt_blocking_objects()
-			power_sold(adj_output)
+			power_sold(adj_output * mult)
 	else if (firing && !online)
 		stop_firing()
 
 	if(connected && charging && src.excess >= src.chargelevel)// if there's power available, try to charge
-		var/adj_charge = clamp(-src.charge, unconsumed_surplus, src.capacity - src.charge)
-		var/load = max(0, src.excess + adj_charge - unconsumed_surplus)
-		if(terminal.add_load(load))						// attempt to add the load to the terminal side network
+		adj_charge = clamp(starting_surplus - power_used, -src.charge, src.capacity - src.charge)
+		power_used += adj_charge
+		var/load = clamp(power_used, 0, starting_surplus)
+		if(terminal.add_load(load))			// attempt to add the load to the terminal side network
 			src.charge += adj_charge				// adjust the charge if we did
 			load_last_tick = load
-			if (!src.is_charging) src.is_charging = TRUE
+
+	src.is_charging = adj_charge > 0
 
 	SEND_SIGNAL(src,COMSIG_MECHCOMP_TRANSMIT_SIGNAL, "output=[src.output]&firing=[src.firing]&charge=[src.charge]&currentbalance=[src.current_balance]&lifetimeearnings=[src.lifetime_earnings]")
 	src.laser_output_needs_update = FALSE
@@ -413,11 +413,11 @@
 /obj/machinery/power/pt_laser/proc/get_available_terminal_power()
 	return src.terminal?.surplus() + src.load_last_tick //otherwise the charge used by this machine last tick is counted against the charge available to it this tick aaaaaaaaaaaaaa
 
-/obj/machinery/power/pt_laser/proc/get_available_input_power(mult)
-		return src.charging * min(src.chargelevel * mult, src.get_available_terminal_power())
+/obj/machinery/power/pt_laser/proc/get_available_input_power()
+		return src.charging * min(src.chargelevel, src.get_available_terminal_power())
 
-/obj/machinery/power/pt_laser/proc/can_fire(mult = 1)
-	return (abs(src.output) * mult <= src.charge + src.get_available_input_power(mult)) & (abs(src.output) >= PTLMINOUTPUT)
+/obj/machinery/power/pt_laser/proc/can_fire()
+	return (abs(src.output) <= src.charge + src.get_available_input_power()) & (abs(src.output) >= PTLMINOUTPUT)
 
 /obj/machinery/power/pt_laser/proc/update_laser_power()
 	src.laser?.traverse(/obj/linked_laser/ptl/proc/update_source_power)
